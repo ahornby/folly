@@ -21,14 +21,20 @@
 #include <stdint.h>
 
 #include <atomic>
+#include <chrono>
+#include <memory>
+#include <mutex>
+#include <shared_mutex>
 #include <thread>
 #include <type_traits>
+#include <utility>
 
 #include <folly/CPortability.h>
 #include <folly/Likely.h>
 #include <folly/concurrency/CacheLocality.h>
 #include <folly/detail/Futex.h>
 #include <folly/portability/Asm.h>
+#include <folly/synchronization/Lock.h>
 #include <folly/synchronization/RelaxedAtomic.h>
 #include <folly/synchronization/SanitizeThread.h>
 #include <folly/system/ThreadId.h>
@@ -241,18 +247,19 @@
 namespace folly {
 
 struct SharedMutexToken {
-  enum class Type : uint16_t {
-    INVALID = 0,
-    INLINE_SHARED,
-    DEFERRED_SHARED,
+  enum class State : uint16_t {
+    Invalid = 0,
+    LockedShared, // May be inline or deferred.
+    LockedInlineShared,
+    LockedDeferredShared,
   };
 
-  Type type_{};
+  State state_{};
   uint16_t slot_{};
 
   constexpr SharedMutexToken() = default;
 
-  explicit operator bool() const { return type_ != Type::INVALID; }
+  explicit operator bool() const { return state_ != State::Invalid; }
 };
 
 #ifndef FOLLY_SHARED_MUTEX_MAX_SPIN_DEFAULT
@@ -489,7 +496,11 @@ class SharedMutexImpl : std::conditional_t<
     wakeRegisteredWaiters(state, kWaitingE | kWaitingU | kWaitingS);
   }
 
-  // Managing the token yourself makes unlock_shared a bit faster
+  // Managing the token yourself makes unlock_shared a bit faster. If the
+  // tokenful version of lock_shared() is used, then it is required to pair the
+  // lock with the tokenful version of unlock_shared(); alternatively, the token
+  // can be invalidated with release_token(), which allows to use the tokenless
+  // unlock_shared().
 
   void lock_shared() {
     WaitForever ctx;
@@ -573,18 +584,48 @@ class SharedMutexImpl : std::conditional_t<
   }
 
   void unlock_shared(Token& token) {
+    if (token.state_ == Token::State::LockedShared) {
+      unlock_shared();
+      if (folly::kIsDebug) {
+        token.state_ = Token::State::Invalid;
+      }
+      return;
+    }
+
     annotateReleased(annotate_rwlock_level::rdlock);
 
     assert(
-        token.type_ == Token::Type::INLINE_SHARED ||
-        token.type_ == Token::Type::DEFERRED_SHARED);
+        token.state_ == Token::State::LockedInlineShared ||
+        token.state_ == Token::State::LockedDeferredShared);
 
-    if (token.type_ != Token::Type::DEFERRED_SHARED ||
+    if (token.state_ != Token::State::LockedDeferredShared ||
         !tryUnlockSharedDeferred(token.slot_)) {
       unlockSharedInline();
     }
     if (folly::kIsDebug) {
-      token.type_ = Token::Type::INVALID;
+      token.state_ = Token::State::Invalid;
+    }
+  }
+
+  // Invalidates the given token so that the tokenless version of
+  // unlock_shared() can be called for a lock that was obtained from a tokenful
+  // lock_shared(). Note that this does not unlock the mutex at any point.
+  void release_token(Token& token) {
+    assert(token.state_ != Token::State::Invalid);
+    if (token.state_ != Token::State::LockedDeferredShared) {
+      return;
+    }
+
+    auto slot = token.slot_;
+    assert(slot < shared_mutex_detail::getMaxDeferredReaders());
+    auto slotValue = tokenfulSlotValue();
+    // Lock may have been inlined, in which case this will return false. We
+    // don't need to do anything in this case.
+    deferredReader(slot)->compare_exchange_strong(
+        slotValue, tokenlessSlotValue());
+
+    if (folly::kIsDebug) {
+      token.state_ = Token::State::Invalid;
     }
   }
 
@@ -611,7 +652,7 @@ class SharedMutexImpl : std::conditional_t<
 
   void unlock_and_lock_shared(Token& token) {
     unlock_and_lock_shared();
-    token.type_ = Token::Type::INLINE_SHARED;
+    token.state_ = Token::State::LockedInlineShared;
   }
 
   void lock_upgrade() {
@@ -677,7 +718,7 @@ class SharedMutexImpl : std::conditional_t<
 
   void unlock_upgrade_and_lock_shared(Token& token) {
     unlock_upgrade_and_lock_shared();
-    token.type_ = Token::Type::INLINE_SHARED;
+    token.state_ = Token::State::LockedInlineShared;
   }
 
   void unlock_and_lock_upgrade() {
@@ -968,13 +1009,6 @@ class SharedMutexImpl : std::conditional_t<
   static_assert(
       !(kDeferredSearchDistance & (kDeferredSearchDistance - 1)),
       "kDeferredSearchDistance must be a power of 2");
-
-  // The number of deferred locks that can be simultaneously acquired
-  // by a thread via the token-less methods without performing any heap
-  // allocations.  Each of these costs 3 pointers (24 bytes, probably)
-  // per thread.  There's not much point in making this larger than
-  // kDeferredSearchDistance.
-  static constexpr uint32_t kTokenStackTLSCapacity = 2;
 
   // We need to make sure that if there is a lock_shared()
   // and lock_shared(token) followed by unlock_shared() and
@@ -1321,7 +1355,7 @@ class SharedMutexImpl : std::conditional_t<
 
   // It is straightforward to make a token-less lock_shared() and
   // unlock_shared() either by making the token-less version always use
-  // INLINE_SHARED mode or by removing the token version.  Supporting
+  // LockedInlineShared mode or by removing the token version.  Supporting
   // deferred operation for both types is trickier than it appears, because
   // the purpose of the token it so that unlock_shared doesn't have to
   // look in other slots for its deferred lock.  Token-less unlock_shared
@@ -1338,7 +1372,7 @@ class SharedMutexImpl : std::conditional_t<
     if ((state & (kHasS | kMayDefer | kHasE)) == 0 &&
         state_.compare_exchange_strong(state, state + kIncrHasS)) {
       if (token != nullptr) {
-        token->type_ = Token::Type::INLINE_SHARED;
+        token->state_ = Token::State::LockedInlineShared;
       }
       return true;
     }
@@ -1400,6 +1434,8 @@ class SharedMutexImpl : std::conditional_t<
 
  public:
   class FOLLY_NODISCARD ReadHolder {
+    using folly_is_unsafe_for_async_usage = std::true_type;
+
     ReadHolder() : lock_(nullptr) {}
 
    public:
@@ -1460,6 +1496,8 @@ class SharedMutexImpl : std::conditional_t<
   };
 
   class FOLLY_NODISCARD UpgradeHolder {
+    using folly_is_unsafe_for_async_usage = std::true_type;
+
     UpgradeHolder() : lock_(nullptr) {}
 
    public:
@@ -1508,6 +1546,8 @@ class SharedMutexImpl : std::conditional_t<
   };
 
   class FOLLY_NODISCARD WriteHolder {
+    using folly_is_unsafe_for_async_usage = std::true_type;
+
     WriteHolder() : lock_(nullptr) {}
 
    public:
@@ -1690,7 +1730,7 @@ bool SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>::lockSharedImpl(
       if (state_.compare_exchange_strong(state, state + kIncrHasS)) {
         // successfully recorded the read lock inline
         if (token != nullptr) {
-          token->type_ = Token::Type::INLINE_SHARED;
+          token->state_ = Token::State::LockedInlineShared;
         }
         return true;
       }
@@ -1736,7 +1776,7 @@ bool SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>::lockSharedImpl(
       assert((state & kHasE) == 0);
       // success
       if (token != nullptr) {
-        token->type_ = Token::Type::DEFERRED_SHARED;
+        token->state_ = Token::State::LockedDeferredShared;
         token->slot_ = (uint16_t)slot;
       }
       return true;
@@ -1767,4 +1807,149 @@ bool SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>::lockSharedImpl(
   }
 }
 
+namespace shared_mutex_detail {
+
+[[noreturn]] void throwOperationNotPermitted();
+
+[[noreturn]] void throwDeadlockWouldOccur();
+
+} // namespace shared_mutex_detail
+
 } // namespace folly
+
+// std::shared_lock specialization for folly::SharedMutex to leverage tokenful
+// version of unlock_shared for faster unlocking.
+namespace std {
+
+template <
+    bool ReaderPriority,
+    typename Tag_,
+    template <typename>
+    class Atom,
+    typename Policy>
+class shared_lock<
+    ::folly::SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>> {
+ public:
+  using mutex_type =
+      ::folly::SharedMutexImpl<ReaderPriority, Tag_, Atom, Policy>;
+  using token_type = typename mutex_type::Token;
+
+  shared_lock() noexcept = default;
+
+  FOLLY_NODISCARD explicit shared_lock(mutex_type& mutex)
+      : mutex_(std::addressof(mutex)) {
+    lock();
+  }
+
+  shared_lock(mutex_type& mutex, std::defer_lock_t) noexcept
+      : mutex_(std::addressof(mutex)) {}
+
+  FOLLY_NODISCARD shared_lock(mutex_type& mutex, std::try_to_lock_t)
+      : mutex_(std::addressof(mutex)) {
+    try_lock();
+  }
+
+  FOLLY_NODISCARD shared_lock(mutex_type& mutex, std::adopt_lock_t)
+      : mutex_(std::addressof(mutex)) {
+    token_.state_ = token_type::State::LockedShared;
+  }
+
+  template <typename Clock, typename Duration>
+  FOLLY_NODISCARD shared_lock(
+      mutex_type& mutex,
+      const std::chrono::time_point<Clock, Duration>& deadline)
+      : mutex_(std::addressof(mutex)) {
+    try_lock_until(deadline);
+  }
+
+  template <typename Rep, typename Period>
+  FOLLY_NODISCARD shared_lock(
+      mutex_type& mutex, const std::chrono::duration<Rep, Period>& timeout)
+      : mutex_(std::addressof(mutex)) {
+    try_lock_for(timeout);
+  }
+
+  ~shared_lock() {
+    if (owns_lock()) {
+      mutex_->unlock_shared(token_);
+    }
+  }
+
+  shared_lock(const shared_lock&) = delete;
+
+  shared_lock& operator=(const shared_lock&) = delete;
+
+  shared_lock(shared_lock&& other) noexcept : shared_lock() { swap(other); }
+
+  shared_lock& operator=(shared_lock&& other) noexcept {
+    shared_lock(std::move(other)).swap(*this);
+    return *this;
+  }
+
+  void lock() {
+    error_if_not_lockable();
+    mutex_->lock_shared(token_);
+  }
+
+  bool try_lock() {
+    error_if_not_lockable();
+    return mutex_->try_lock_shared(token_);
+  }
+
+  template <typename Rep, typename Period>
+  bool try_lock_for(const std::chrono::duration<Rep, Period>& timeout) {
+    error_if_not_lockable();
+    return mutex_->try_lock_shared_for(timeout, token_);
+  }
+
+  template <typename Clock, typename Duration>
+  bool try_lock_until(
+      const std::chrono::time_point<Clock, Duration>& deadline) {
+    error_if_not_lockable();
+    return mutex_->try_lock_shared_until(deadline, token_);
+  }
+
+  void unlock() {
+    if (FOLLY_UNLIKELY(!owns_lock())) {
+      ::folly::shared_mutex_detail::throwOperationNotPermitted();
+    }
+    mutex_->unlock_shared(token_);
+    token_ = {};
+  }
+
+  void swap(shared_lock& other) noexcept {
+    std::swap(mutex_, other.mutex_);
+    std::swap(token_, other.token_);
+  }
+
+  mutex_type* release() noexcept {
+    if (owns_lock()) {
+      mutex_->release_token(token_);
+      token_ = {};
+    }
+    return std::exchange(mutex_, nullptr);
+  }
+
+  FOLLY_NODISCARD bool owns_lock() const noexcept {
+    return static_cast<bool>(token_);
+  }
+
+  explicit operator bool() const noexcept { return owns_lock(); }
+
+  FOLLY_NODISCARD mutex_type* mutex() const noexcept { return mutex_; }
+
+ private:
+  void error_if_not_lockable() const {
+    if (FOLLY_UNLIKELY(mutex_ == nullptr)) {
+      ::folly::shared_mutex_detail::throwOperationNotPermitted();
+    }
+    if (FOLLY_UNLIKELY(owns_lock())) {
+      ::folly::shared_mutex_detail::throwDeadlockWouldOccur();
+    }
+  }
+
+  mutex_type* mutex_ = nullptr;
+  token_type token_;
+};
+
+} // namespace std
