@@ -120,7 +120,10 @@ TEST(RateLimiter, concurrentThreads) {
   EXPECT_EQ(maxEvents, count.load(std::memory_order_relaxed));
 }
 
+#if not defined(__APPLE__) || __cplusplus > 201703L
+// xcode hides the definition of std::chrono::years unless in C++20 mode
 TEST(RateLimiter, LargeInterval) {
   IntervalRateLimiter limiter{1, std::chrono::years{1}};
   EXPECT_TRUE(limiter.check());
 }
+#endif
