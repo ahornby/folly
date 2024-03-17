@@ -108,3 +108,6 @@ toolset=clang
 
 [b2.args.all(os=windows,fb=on)]
 toolset=msvc-14.2
+
+[choco]
+boost-msvc-14.2
