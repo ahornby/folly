@@ -4,6 +4,9 @@ name = cmake
 [homebrew]
 cmake
 
+[scoop]
+main/cmake
+
 # 18.04 cmake is too old
 [debs.not(all(distro=ubuntu,distro_vers="18.04"))]
 cmake

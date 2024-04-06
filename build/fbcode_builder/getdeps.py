@@ -418,6 +418,10 @@ class InstallSysDepsCmd(ProjectCmdBase):
             packages = sorted(set(all_packages["homebrew"]))
             if packages:
                 cmd_args = ["brew", "install"] + packages
+        elif manager == "scoop":
+            packages = sorted(set(all_packages["scoop"]))
+            if packages:
+                cmd_args = ["scoop.cmd", "install"] + packages
 
         else:
             host_tuple = loader.build_opts.host_type.as_tuple_string()
@@ -1074,8 +1078,8 @@ jobs:
                     out.write(f"      run: {sudo_arg}apt-get update\n")
 
                 out.write("    - name: Install system deps\n")
-                if build_opts.is_darwin():
-                    # brew is installed as regular user
+                if build_opts.is_darwin() or build_opts.is_windows():
+                    # brew and scoop are installed as regular user
                     sudo_arg = ""
                 out.write(
                     f"      run: {sudo_arg}python3 build/fbcode_builder/getdeps.py --allow-system-packages install-system-deps --recursive {manifest.name}\n"
@@ -1150,7 +1154,7 @@ jobs:
                 no_tests_arg = "--no-tests "
 
             out.write(
-                f"      run: {getdepscmd}{allow_sys_arg} build {build_type_arg}{no_tests_arg}{no_deps_arg}--src-dir=. {manifest.name} {project_prefix}\n"
+                f"      run: {getdepscmd}{allow_sys_arg} build {build_type_arg}{no_tests_arg}{no_deps_arg}--src-dir=. {manifest.name}{project_prefix}\n"
             )
 
             out.write("    - name: Copy artifacts\n")
@@ -1165,7 +1169,7 @@ jobs:
 
             out.write(
                 f"      run: {getdepscmd}{allow_sys_arg} fixup-dyn-deps{strip} "
-                f"--src-dir=. {manifest.name} _artifacts/{artifacts} {project_prefix} "
+                f"--src-dir=. {manifest.name} _artifacts/{artifacts}{project_prefix} "
                 f"--final-install-prefix /usr/local\n"
             )
 
@@ -1181,7 +1185,7 @@ jobs:
             ):
                 out.write("    - name: Test %s\n" % manifest.name)
                 out.write(
-                    f"      run: {getdepscmd}{allow_sys_arg} test --src-dir=. {manifest.name} {project_prefix}\n"
+                    f"      run: {getdepscmd}{allow_sys_arg} test --src-dir=. {manifest.name}{project_prefix}\n"
                 )
             if build_opts.free_up_disk and not build_opts.is_windows():
                 out.write("    - name: Show disk space at end\n")

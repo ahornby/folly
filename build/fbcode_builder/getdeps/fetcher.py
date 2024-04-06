@@ -177,6 +177,8 @@ class SystemPackageFetcher(object):
             cmd = ["dpkg", "-s"] + sorted(self.packages)
         elif self.manager == "homebrew":
             cmd = ["brew", "ls", "--versions"] + sorted(self.packages)
+        elif self.manager == "scoop":
+            cmd = ["scoop.cmd", "list"] + sorted(self.packages)
 
         if cmd:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

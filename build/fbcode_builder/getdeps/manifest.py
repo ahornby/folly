@@ -93,6 +93,7 @@ SCHEMA = {
     "rpms": {"optional_section": True},
     "debs": {"optional_section": True},
     "homebrew": {"optional_section": True},
+    "scoop": {"optional_section": True},
     "preinstalled.env": {"optional_section": True},
     "bootstrap.args": {"optional_section": True},
     "b2.args": {"optional_section": True},
@@ -127,6 +128,7 @@ ALLOWED_EXPR_SECTIONS = [
     "shipit.pathmap",
     "shipit.strip",
     "homebrew",
+    "scoop",
     "github.actions",
 ]
 
@@ -375,6 +377,7 @@ class ManifestParser(object):
             "rpm": self.get_section_as_args("rpms", ctx),
             "deb": self.get_section_as_args("debs", ctx),
             "homebrew": self.get_section_as_args("homebrew", ctx),
+            "scoop": self.get_section_as_args("scoop", ctx),
         }
 
     def _is_satisfied_by_preinstalled_environment(self, ctx):
