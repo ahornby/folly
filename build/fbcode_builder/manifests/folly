@@ -60,10 +60,6 @@ fbcode/folly = folly
 ^fbcode/folly/folly-config\.h$
 ^fbcode/folly/public_tld/build/facebook_.*
 
-[cmake.defines]
-BUILD_SHARED_LIBS=OFF
-BOOST_LINK_STATIC=ON
-
 [cmake.defines.os=freebsd]
 LIBDWARF_FOUND=NO
 

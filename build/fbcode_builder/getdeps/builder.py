@@ -543,8 +543,6 @@ if __name__ == "__main__":
             self.defines.update(extra_vc_cmake_defines)
 
         self.loader = loader
-        if build_opts.shared_libs:
-            self.defines["BUILD_SHARED_LIBS"] = "ON"
 
     def _invalidate_cache(self) -> None:
         for name in [
@@ -602,7 +600,7 @@ if __name__ == "__main__":
     def _compute_cmake_define_args(self, env):
         defines = {
             "CMAKE_INSTALL_PREFIX": self.final_install_prefix or self.inst_dir,
-            "BUILD_SHARED_LIBS": "OFF",
+            "BUILD_SHARED_LIBS": "ON" if self.build_opts.shared_libs else "OFF",
             # Some of the deps (rsocket) default to UBSAN enabled if left
             # unspecified.  Some of the deps fail to compile in release mode
             # due to warning->error promotion.  RelWithDebInfo is the happy
