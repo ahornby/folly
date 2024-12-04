@@ -1201,6 +1201,8 @@ class OpenSSLBuilder(BuilderBase):
                 "no-tests",
             ]
         )
+        # show the config produced
+        self._run_cmd([perl, "configdata.pm", "--dump"])
         make_build = [make] + make_j_args
         self._run_cmd(make_build)
         make_install = [make, "install_sw", "install_ssldirs"]
