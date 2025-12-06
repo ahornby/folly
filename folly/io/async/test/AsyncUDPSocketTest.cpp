@@ -175,8 +175,9 @@ class UDPServer {
 
   std::unique_ptr<AsyncUDPServerSocket> socket_;
   std::vector<std::thread> threads_;
-  std::vector<folly::EventBase> evbs_;
   std::vector<UDPAcceptor> acceptors_;
+  // destroy evbs_ before acceptors_ so that onListenStopped not called on a freed UDPAcceptor
+  std::vector<folly::EventBase> evbs_;
   bool changePortForWrites_{true};
 };
 
