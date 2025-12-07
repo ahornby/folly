@@ -171,13 +171,15 @@ TEST(HeapVectorTypes, SimpleSetTest) {
   EXPECT_TRUE(s == s2);
 
   auto it = s2.lower_bound(32);
-  if (*it == 32) {
+  if (it != s2.end() && *it == 32) {
     s2.erase(it);
     it = s2.lower_bound(32);
   }
   check_invariant(s2);
+  s2.erase(32);
   auto oldSz = s2.size();
-  s2.insert(it, 32);
+  auto insertRes = s2.insert(32);
+  EXPECT_TRUE(insertRes.second);
   EXPECT_TRUE(s2.size() == oldSz + 1);
   check_invariant(s2);
 
