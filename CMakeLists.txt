@@ -1026,7 +1026,6 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
         SOURCES shared_from_this_ptr_test.cpp
       TEST memory_thread_cached_arena_test WINDOWS_DISABLED
         SOURCES ThreadCachedArenaTest.cpp
-      TEST memory_mallctl_helper_test SOURCES MallctlHelperTest.cpp
       TEST memory_uninitialized_memory_hacks_test
         SOURCES UninitializedMemoryHacksTest.cpp
 
@@ -1255,6 +1254,18 @@ if (BUILD_TESTS OR BUILD_BENCHMARKS)
       TEST json_json_pointer_test SOURCES json_pointer_test.cpp
       TEST json_json_schema_test SOURCES JSONSchemaTest.cpp
   )
+
+  if (FOLLY_USE_JEMALLOC)
+    folly_define_tests(
+      DIRECTORY memory/test/
+        TEST memory_mallctl_helper_test SOURCES MallctlHelperTest.cpp
+    ) 
+    find_library(FOLLY_JEMALLOC_LIB jemalloc)
+    if (FOLLY_JEMALLOC_LIB)
+      target_link_libraries(fbstring_test PRIVATE ${FOLLY_JEMALLOC_LIB})
+      target_link_libraries(memory_mallctl_helper_test PRIVATE ${FOLLY_JEMALLOC_LIB})
+    endif()
+  endif()
 
   if (${LIBSODIUM_FOUND})
     folly_define_tests(
