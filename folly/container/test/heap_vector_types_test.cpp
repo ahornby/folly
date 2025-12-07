@@ -171,7 +171,7 @@ TEST(HeapVectorTypes, SimpleSetTest) {
   EXPECT_TRUE(s == s2);
 
   auto it = s2.lower_bound(32);
-  if (*it == 32) {
+  if (it != s2.end() && *it == 32) {
     s2.erase(it);
     it = s2.lower_bound(32);
   }
